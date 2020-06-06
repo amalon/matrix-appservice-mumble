@@ -6,6 +6,7 @@ export default class Murmur {
   private addr: string;
   private server: MurmurServer | undefined;
   private matrixClient: any;
+  private bridge: any;
   client: MurmurClient | undefined;
 
   constructor(addr: string) {
@@ -81,6 +82,7 @@ export default class Murmur {
   }
 
   async setupCallbacks(bridge: any, config: MurmurConfig) {
+    this.bridge = bridge;
     const stream = await this.getServerStream() as NodeJS.ReadableStream;
     stream.on('data', (chunk) => {
       switch (chunk.type) {
@@ -158,9 +160,13 @@ export default class Murmur {
       messageContent = event.content.formatted_body;
     }
 
+    const intent = this.bridge.getIntent();
+    const profile = await intent.getProfileInfo(event.sender, 'displayname');
+    const displayname = profile.displayname;
+
     this.client.textMessageSend({
       server: this.server,
-      text: `${event.sender}: ${messageContent}`,
+      text: `${displayname}: ${messageContent}`,
     }, () => { });
 
     return;
