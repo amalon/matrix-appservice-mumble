@@ -1,15 +1,20 @@
 import { loadPackageDefinition, credentials } from 'grpc';
-import { MurmurClient, MurmurServer, MurmurConfig, MessageEvent } from './types';
+import { MurmurClient, MurmurServer, MurmurChannel, MurmurConfig, MessageEvent } from './types';
 import * as protoLoader from '@grpc/proto-loader';
 
 export default class Murmur {
   private addr: string;
   private server: MurmurServer | undefined;
+  private gotChannels: Promise<boolean> | undefined;
+  private channels: MurmurChannel[];
+  private channel_ids: number[];
   private matrixClient: any;
   client: MurmurClient | undefined;
 
   constructor(addr: string) {
     this.addr = addr;
+    this.channels = [];
+    this.channel_ids = [];
     return;
   }
 
@@ -80,9 +85,60 @@ export default class Murmur {
     });
   }
 
+  getServerChannels(config: MurmurConfig) {
+    return new Promise<boolean>((resolve) => {
+      if (!config.channels) {
+        resolve(true);
+      }
+      if (!this.client) {
+        console.log("Murmur client connection null!");
+        process.exit(1);
+      }
+
+      if (!this.server) {
+        console.log('Not got server yet!');
+        process.exit(1);
+      }
+
+      this.client.channelQuery({server: this.server}, (e, r) => {
+        if (!this.client) {
+          console.log("Murmur client connection null!");
+          process.exit(1);
+        }
+
+        if (e) {
+          console.log(e);
+          process.exit(1);
+        } else if (r) {
+          for (const channel of r.channels) {
+            if (!channel.name || !channel.id) {
+              continue;
+            }
+            if (config.channels && config.channels.includes(channel.name)) {
+              console.log("Found channel '%s' with id '%s'", channel.name, channel.id);
+              this.channels.push(channel);
+              this.channel_ids.push(channel.id);
+            }
+          }
+          if (config.channels && this.channels.length != config.channels.length) {
+            if (this.channels.length) {
+              console.log("WARNING: Not all channels in config were found.");
+            } else {
+              console.log("WARNING: No channels in config were found.");
+              process.exit(1);
+            }
+          }
+
+          resolve(true);
+        }
+      });
+    });
+  }
+
   async setupCallbacks(bridge: any, config: MurmurConfig) {
     const stream = await this.getServerStream() as NodeJS.ReadableStream;
-    stream.on('data', (chunk) => {
+    this.gotChannels = this.getServerChannels(config);
+    stream.on('data', async (chunk) => {
       switch (chunk.type) {
         case 'UserConnected':
           const connIntent = bridge.getIntent();
@@ -103,9 +159,10 @@ export default class Murmur {
           if (!chunk.message.channels) {
             return;
           } else {
+            await this.gotChannels;
             let shouldSend = false;
             for (const channel of chunk.message.channels) {
-              if (config.channels && !config.channels.includes(channel.name)) {
+              if (this.channel_ids.length && !this.channel_ids.includes(channel.id)) {
                   continue;
               }
               shouldSend = true;
@@ -140,7 +197,7 @@ export default class Murmur {
   }
 
   async sendMessage(event: MessageEvent, displayname?: string) {
-    if (!this.client || !this.server) {
+    if (!this.client || !this.server || !this.gotChannels) {
       return;
     }
 
@@ -163,8 +220,10 @@ export default class Murmur {
       displayname = event.sender;
     }
 
+    await this.gotChannels;
     this.client.textMessageSend({
       server: this.server,
+      channels: this.channels,
       text: `${displayname}: ${messageContent}`,
     }, () => { });
 

@@ -4,6 +4,17 @@ interface MurmurServer {
     running: boolean;
 }
 
+interface MurmurChannel {
+    server?: MurmurServer;
+    id?: number;
+    name?: string;
+    parent?: MurmurChannel;
+    links: MurmurChannel[];
+    description: string;
+    temporary: boolean;
+    position: number;
+}
+
 interface MurmurConfig {
     domain: string;
     matrixRoom: string;
@@ -14,7 +25,8 @@ interface MurmurConfig {
 
 interface MurmurClient extends Client {
     serverQuery({ }, callback: (err: Error | undefined, res: { servers: MurmurServer[] } | undefined) => void): void;
-    textMessageSend(args: { server: MurmurServer, text: string }, callback: () => void): void;
+    channelQuery(args: { server: MurmurServer }, callback: (err: Error | undefined, res: { server: MurmurServer | undefined, channels: MurmurChannel[] } | undefined) => void):  void;
+    textMessageSend(args: { server: MurmurServer, channels: MurmurChannel[], text: string }, callback: () => void): void;
     serverEvents(server: MurmurServer): NodeJS.ReadableStream;
 }
 
