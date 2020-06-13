@@ -1,7 +1,7 @@
 import { credentials, ClientReadableStream, makeClientConstructor } from "@grpc/grpc-js";
 import * as MurmurService from '../lib/MurmurRPC_grpc_pb';
 import { Server, TextMessage, Channel, User } from '../lib/MurmurRPC_pb';
-import { Bridge, RoomBridgeStore, Event, MatrixRoom } from 'matrix-appservice-bridge';
+import { Bridge, RoomBridgeStore, UserBridgeStore, RemoteUser, Event, MatrixRoom } from 'matrix-appservice-bridge';
 import { MatrixClient } from 'matrix-js-sdk';
 
 export default class Murmur {
@@ -85,6 +85,27 @@ export default class Murmur {
     stream.on('data', async (event: Server.Event) => {
       switch (event.getType()) {
         case Server.Event.Type.USERCONNECTED:
+          const connJoinChannel = event.getUser()?.getChannel();
+          if (connJoinChannel) {
+            // Update the channel the user is in
+            const remoteUser = new RemoteUser(String(event.getUser()?.getId()),
+                                              { channel: connJoinChannel.getId() });
+            await bridge.getUserStore()?.setRemoteUser(remoteUser);
+
+            const joinMtxRooms = await getMatrixRooms([ connJoinChannel ]);
+
+            if (joinMtxRooms.length) {
+              const joinIntent = bridge.getIntent(`@mumble_${event.getUser()?.getName()}:${config.domain}`);
+              for (const room of joinMtxRooms) {
+                const mtxId = room.getId();
+                if (!mtxId) {
+                  continue;
+                }
+                joinIntent.join(mtxId);
+              }
+            }
+          }
+
           const connMtxRooms = await roomLinks.getEntriesByLinkData({ send_join_part: true });
           if (!connMtxRooms.length) {
             break;
@@ -103,6 +124,26 @@ export default class Murmur {
           }
           break;
         case Server.Event.Type.USERDISCONNECTED:
+          const disconnLeaveChannel = event.getUser()?.getChannel();
+          if (disconnLeaveChannel) {
+            // Clear the channel the user is in
+            const remoteUser = new RemoteUser(String(event.getUser()?.getId()));
+            await bridge.getUserStore()?.setRemoteUser(remoteUser);
+
+            const leaveMtxRooms = await getMatrixRooms([ disconnLeaveChannel ]);
+
+            if (leaveMtxRooms.length) {
+              const leaveIntent = bridge.getIntent(`@mumble_${event.getUser()?.getName()}:${config.domain}`);
+              for (const room of leaveMtxRooms) {
+                const mtxId = room.getId();
+                if (!mtxId) {
+                  continue;
+                }
+                leaveIntent.leave(mtxId);
+              }
+            }
+          }
+
           const disconnMtxRooms = await roomLinks.getEntriesByLinkData({ send_join_part: true });
           if (!disconnMtxRooms.length) {
             break;
@@ -118,6 +159,45 @@ export default class Murmur {
               body: `${event.getUser()?.getName()} has disconnected from the server.`,
               msgtype: "m.notice"
             });
+          }
+          break;
+	case Server.Event.Type.USERSTATECHANGED:
+          const stateJoinChannel = event.getUser()?.getChannel();
+          if (stateJoinChannel) {
+            // Has the user switched channels?
+            const remoteUser = await bridge.getUserStore()?.getRemoteUser(String(event.getUser()?.getId()));
+            const prevChannel = remoteUser?.get('channel');
+            if (!prevChannel || Number(prevChannel) != stateJoinChannel.getId()) {
+              // Update the db
+              const newRemoteUser = new RemoteUser(String(event.getUser()?.getId()), { channel: stateJoinChannel.getId() });
+              await bridge.getUserStore()?.setRemoteUser(newRemoteUser);
+
+              // Remove from whichever room user was in
+              const leaveMtxRooms = await getMatrixRooms(Number(prevChannel));
+              if (leaveMtxRooms.length) {
+                const leaveIntent = bridge.getIntent(`@mumble_${event.getUser()?.getName()}:${config.domain}`);
+                for (const room of leaveMtxRooms) {
+                  const mtxId = room.getId();
+                  if (!mtxId) {
+                    continue;
+                  }
+                  leaveIntent.leave(mtxId);
+                }
+              }
+
+              // Add to whichever room user is now in
+              const joinMtxRooms = await getMatrixRooms([ stateJoinChannel ]);
+              if (joinMtxRooms.length) {
+                const joinIntent = bridge.getIntent(`@mumble_${event.getUser()?.getName()}:${config.domain}`);
+                for (const room of joinMtxRooms) {
+                  const mtxId = room.getId();
+                  if (!mtxId) {
+                    continue;
+                  }
+                  joinIntent.join(mtxId);
+                }
+              }
+            }
           }
           break;
         case Server.Event.Type.USERTEXTMESSAGE:
